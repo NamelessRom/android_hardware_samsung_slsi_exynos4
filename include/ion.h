@@ -5,8 +5,11 @@
 
 #define ION_HEAP_SYSTEM_MASK		(1 << 0)
 #define ION_HEAP_SYSTEM_CONTIG_MASK	(1 << 1)
-#define ION_HEAP_EXYNOS_MASK		(1 << 4)
-#define ION_HEAP_EXYNOS_CONTIG_MASK	(1 << 5)
+#define ION_HEAP_EXYNOS_CONTIG_MASK	(1 << 4)
+#define ION_HEAP_EXYNOS_MASK		(1 << 5)
+#define ION_HEAP_EXYNOS_USER_MASK	(1 << 6)
+#define ION_EXYNOS_NONCACHE_MASK	(1 << (BITS_PER_LONG - 2))
+#define ION_EXYNOS_WRITE_MASK		(1 << (BITS_PER_LONG - 1))
 
 /* ION_MSYNC_FLAGS
  * values of @flags parameter to ion_msync()
