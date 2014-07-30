@@ -32,20 +32,15 @@
 
 #include <fcntl.h>
 #include <errno.h>
-#include <utils/Log.h>
+#include <cutils/log.h>
 
-#ifdef BOARD_USE_V4L2_ION
-#include <ion.h>
-#include "s5p_fimc_v4l2.h"
-#include "sec_utils_v4l2.h"
-#else
+#include <linux/videodev.h>
 #include "videodev2.h"
 #include "s5p_fimc.h"
 #include "sec_utils.h"
-#endif
-
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <hardware/gralloc.h>
 
 #include "linux/fb.h"
@@ -53,21 +48,21 @@
 #include "s3c_lcd.h"
 #include "sec_format.h"
 
-//#define HWC_DEBUG
+//#define HWC_DEBUG 1
 #if defined(BOARD_USES_FIMGAPI)
 #include "sec_g2d.h"
 #endif
 
-//#define SKIP_DUMMY_UI_LAY_DRAWING	//close it, or overlay video color is not correct. 
+#define SKIP_DUMMY_UI_LAY_DRAWING
 
 #ifdef SKIP_DUMMY_UI_LAY_DRAWING
 #define GL_WA_OVLY_ALL
-#define THRES_FOR_SWAP  (1800)    /* 60sec in Frames. 30fps * 60 = 1800 */
+#define THRES_FOR_SWAP  (3427)    /* 60sec in Frames. 57fps * 60 = 3427 */
 #endif
 
 #define NUM_OF_DUMMY_WIN    (4)
-#define NUM_OF_WIN          (1)			//wjj, use 1 overlay window to save reserved memory.
-#define NUM_OF_WIN_BUF      (3) //(2)	//wjj, use 3 overlay buffer to avoid flicker.
+#define NUM_OF_WIN          (2)
+#define NUM_OF_WIN_BUF      (2)
 #define NUM_OF_MEM_OBJ      (1)
 
 #if (NUM_OF_WIN_BUF < 2)
@@ -77,16 +72,15 @@
 #define MAX_RESIZING_RATIO_LIMIT  (63)
 
 #ifdef SAMSUNG_EXYNOS4x12
-#ifdef BOARD_USE_V4L2_ION
-#define PP_DEVICE_DEV_NAME  "/dev/video4"
-#else
 #define PP_DEVICE_DEV_NAME  "/dev/video3"
-#endif
 #endif
 
 #ifdef SAMSUNG_EXYNOS4210
 #define PP_DEVICE_DEV_NAME  "/dev/video1"
 #endif
+
+/* cacheable configuration */
+#define V4L2_CID_CACHEABLE			(V4L2_CID_BASE+40)
 
 struct sec_rect {
     int32_t x;
@@ -133,9 +127,6 @@ struct hwc_win_info_t {
     int        layer_index;
     int        status;
     int        vsync;
-#ifdef BOARD_USE_V4L2_ION
-    int        ion_fd;
-#endif
 
     struct fb_fix_screeninfo fix_info;
     struct fb_var_screeninfo var_info;
@@ -161,29 +152,12 @@ struct hwc_ui_lay_info{
 };
 #endif
 
-struct exynos4_hwc_composer_device_1_t {
-    hwc_composer_device_1_t base;
+struct hwc_context_t {
+    hwc_composer_device_1_t device;
 
-    int                     fd;
-    int                     vsync_fd;
-    //exynos4_hwc_post_data_t bufs;
-
-    const struct private_module_t  *gralloc_module;
-    alloc_device_t          *alloc_device;
-    framebuffer_device_t   *fb_device;  //framebuffer in FIMD
-    const hwc_procs_t       *procs;
-    pthread_t               vsync_thread;
-    int                     force_gpu;
-
-    int32_t                 xres;
-    int32_t                 yres;
-    int32_t                 xdpi;
-    int32_t                 ydpi;
-    int32_t                 vsync_period;
-
-
-
-    struct hwc_win_info_t     win[NUM_OF_WIN];  //overlay in FIMD
+    /* our private state goes below here */
+    struct hwc_win_info_t     win[NUM_OF_WIN];
+    struct hwc_win_info_t     global_lcd_win;
 #ifdef SKIP_DUMMY_UI_LAY_DRAWING
     struct hwc_ui_lay_info    win_virt[NUM_OF_DUMMY_WIN];
     int                       fb_lay_skip_initialized;
@@ -192,22 +166,25 @@ struct exynos4_hwc_composer_device_1_t {
     int                       ui_skip_frame_cnt;
 #endif
 #endif
-    struct fb_var_screeninfo  lcd_info; //overlay window var info
-    s5p_fimc_t         fimc;    //for overlay
+
+    struct fb_var_screeninfo  lcd_info;
+    s5p_fimc_t                fimc;
+    hwc_procs_t               *procs;
+    pthread_t                 uevent_thread;
+    pthread_t                 vsync_thread;
+
     int                       num_of_fb_layer;
     int                       num_of_hwc_layer;
     int                       num_of_fb_layer_prev;
-    int            num_2d_blit_layer;
+    int                       num_2d_blit_layer;
     uint32_t                  layer_prev_buf[NUM_OF_WIN];
 
-    /*
-    exynos4_fimc_data_t      fimc[NUM_FIMC_UNITS];
+    int                       num_of_ext_disp_layer;
+    int                       num_of_ext_disp_video_layer;
 
-    struct s3c_fb_win_config last_config[NUM_HW_WINDOWS];
-    size_t                  last_fb_window;
-    const void              *last_handles[NUM_HW_WINDOWS];
-    exynos4_fimc_map_t       last_fimc_map[NUM_HW_WINDOWS];
-    */
+#ifdef BOARD_USES_HDMI
+    int                       hdmi_cable_status;
+#endif
 };
 
 typedef enum _LOG_LEVEL {
@@ -223,8 +200,8 @@ typedef enum _LOG_LEVEL {
 #else
 #define SEC_HWC_Log(a, ...)                                         \
     do {                                                            \
-        if (a == HWC_LOG_ERROR)                                     \
-            ((void)_SEC_HWC_Log(a, SEC_HWC_LOG_TAG, __VA_ARGS__)); \
+	if (a == HWC_LOG_ERROR)                                     \
+	    ((void)_SEC_HWC_Log(a, SEC_HWC_LOG_TAG, __VA_ARGS__)); \
     } while (0)
 #endif
 
@@ -303,13 +280,14 @@ int window_get_info   (struct hwc_win_info_t *win, int win_num);
 int window_pan_display(struct hwc_win_info_t *win);
 int window_show       (struct hwc_win_info_t *win);
 int window_hide       (struct hwc_win_info_t *win);
-int window_get_global_lcd_info(int fd, struct fb_var_screeninfo *lcd_info);
+int window_get_global_lcd_info(struct hwc_context_t *ctx);
 
 int createFimc (s5p_fimc_t *fimc);
 int destroyFimc(s5p_fimc_t *fimc);
-int runFimc(struct exynos4_hwc_composer_device_1_t *ctx,
-            struct sec_img *src_img, struct sec_rect *src_rect,
-            struct sec_img *dst_img, struct sec_rect *dst_rect,
-            uint32_t transform);
+int runFimc(struct hwc_context_t *ctx,
+	    struct sec_img *src_img, struct sec_rect *src_rect,
+	    struct sec_img *dst_img, struct sec_rect *dst_rect,
+	    uint32_t transform);
+int check_yuv_format(unsigned int color_format);
 
 #endif /* ANDROID_SEC_HWC_UTILS_H_*/
