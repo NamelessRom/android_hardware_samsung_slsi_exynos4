@@ -26,13 +26,8 @@
 
 #include "SecHWCUtils.h"
 
-#ifdef BOARD_USE_V4L2_ION
-#define V4L2_BUF_TYPE_OUTPUT V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE
-#define V4L2_BUF_TYPE_CAPTURE V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE
-#else
 #define V4L2_BUF_TYPE_OUTPUT V4L2_BUF_TYPE_VIDEO_OUTPUT
 #define V4L2_BUF_TYPE_CAPTURE V4L2_BUF_TYPE_VIDEO_CAPTURE
-#endif
 
 #define EXYNOS4_ALIGN( value, base ) (((value) + ((base) - 1)) & ~((base) - 1))
 
@@ -77,10 +72,6 @@ struct yuv_fmt_list yuv_list[] = {
     { "V4L2_PIX_FMT_NV21X",     "YUV420/2P/MSB_CBCR",   V4L2_PIX_FMT_NV21X,    12, 2 },
     { "V4L2_PIX_FMT_NV12X",     "YUV420/2P/MSB_CRCB",   V4L2_PIX_FMT_NV12X,    12, 2 },
     { "V4L2_PIX_FMT_YUV420",    "YUV420/3P",            V4L2_PIX_FMT_YUV420,   12, 3 },
-#ifdef BOARD_USE_V4L2_ION
-    { "V4L2_PIX_FMT_YUV420M",   "YUV420/3P",            V4L2_PIX_FMT_YUV420M,  12, 3 },
-    { "V4L2_PIX_FMT_NV12M",     "YUV420/2P",            V4L2_PIX_FMT_NV12M,    12, 2 },
-#endif
     { "V4L2_PIX_FMT_YUYV",      "YUV422/1P/YCBYCR",     V4L2_PIX_FMT_YUYV,     16, 1 },
     { "V4L2_PIX_FMT_YVYU",      "YUV422/1P/YCRYCB",     V4L2_PIX_FMT_YVYU,     16, 1 },
     { "V4L2_PIX_FMT_UYVY",      "YUV422/1P/CBYCRY",     V4L2_PIX_FMT_UYVY,     16, 1 },
@@ -110,18 +101,19 @@ int window_open(struct hwc_win_info_t *win, int id)
 
     switch (id) {
     case 0:
-#ifdef BOARD_USE_V4L2_ION
-        real_id = 2;
-#else
-        real_id = 4;
-#endif
+        real_id = 3;
         break;
     case 1:
-#ifdef BOARD_USE_V4L2_ION
+        real_id = 4;
+        break;
+    case 2:
+        real_id = 0;
+        break;
+    case 3:
         real_id = 1;
-#else
-        real_id = 3  ;
-#endif
+        break;
+    case 4:
+        real_id = 2;
         break;
     default:
         SEC_HWC_Log(HWC_LOG_ERROR, "%s::id(%d) is weird", __func__, id);
@@ -165,11 +157,6 @@ int window_close(struct hwc_win_info_t *win)
     int ret = 0;
 
     if (0 < win->fd) {
-
-#ifdef BOARD_USE_V4L2_ION
-        ion_unmap((void *)win->addr[0], ALIGN(win->size * NUM_OF_WIN_BUF, PAGE_SIZE));
-        ion_free(win->ion_fd);
-#endif
 
 #ifdef ENABLE_FIMD_VSYNC
         int vsync = 0;
@@ -235,26 +222,9 @@ int window_get_info(struct hwc_win_info_t *win, int win_num)
 
     win->size = win->fix_info.line_length * win->var_info.yres;
 
-#ifdef BOARD_USE_V4L2_ION
-    struct s3c_fb_user_ion_client ion_handle;
-    void *ion_start_addr;
-
-    if (ioctl(win->fd, S3CFB_GET_ION_USER_HANDLE, &ion_handle) < 0) {
-        SEC_HWC_Log(HWC_LOG_ERROR, "Get fb ion client is failed\n");
-        return -1;
-    }
-
-    win->ion_fd = ion_handle.fd;
-    ion_start_addr = ion_map(win->ion_fd, ALIGN(win->size * NUM_OF_WIN_BUF, PAGE_SIZE), 0);
-#endif
-
     for (int j = 0; j < NUM_OF_WIN_BUF; j++) {
         temp_size = win->size * j;
-#ifdef BOARD_USE_V4L2_ION
-        win->addr[j] = (uint32_t)ion_start_addr + temp_size;
-#else
         win->addr[j] = win->fix_info.smem_start + temp_size;
-#endif
         SEC_HWC_Log(HWC_LOG_DEBUG, "%s::win-%d add[%d]  %x ",
                 __func__, win_num, j,  win->addr[j]);
     }
@@ -271,16 +241,9 @@ int window_pan_display(struct hwc_win_info_t *win)
     struct fb_var_screeninfo *lcd_info = &(win->lcd_info);
 
 #ifdef ENABLE_FIMD_VSYNC
-#ifdef BOARD_USE_V4L2_ION
-    int fimd_num = 0;
-    if (ioctl(win->fd, FBIO_WAITFORVSYNC, &fimd_num) < 0)
-        SEC_HWC_Log(HWC_LOG_ERROR, "%s::FBIO_WAITFORVSYNC fail(%s)",
-                __func__, strerror(errno));
-#else
     if (ioctl(win->fd, FBIO_WAITFORVSYNC, 0) < 0)
         SEC_HWC_Log(HWC_LOG_ERROR, "%s::FBIO_WAITFORVSYNC fail(%s)",
                 __func__, strerror(errno));
-#endif
 #endif
 
     lcd_info->yoffset = lcd_info->yres * win->buf_index;
@@ -322,16 +285,26 @@ int window_hide(struct hwc_win_info_t *win)
     return 0;
 }
 
-int window_get_global_lcd_info(int fd, struct fb_var_screeninfo *lcd_info)
+int window_get_global_lcd_info(struct hwc_context_t *ctx)
 {
-    if (ioctl(fd, FBIOGET_VSCREENINFO, lcd_info) < 0) {
+    if (ioctl(ctx->global_lcd_win.fd, FBIOGET_VSCREENINFO, &ctx->lcd_info) < 0) {
         SEC_HWC_Log(HWC_LOG_ERROR, "FBIOGET_VSCREENINFO failed : %s",
                 strerror(errno));
         return -1;
     }
 
-    SEC_HWC_Log(HWC_LOG_DEBUG, "%s:: Default LCD x(%d),y(%d)",
-            __func__, lcd_info->xres, lcd_info->yres);
+    if (ctx->lcd_info.xres == 0) {
+        SEC_HWC_Log(HWC_LOG_ERROR, "ATTENTION: XRES IS 0");
+    }
+
+    if (ctx->lcd_info.yres == 0) {
+        SEC_HWC_Log(HWC_LOG_ERROR, "ATTENTION: YRES IS 0");
+    }
+
+    if (ctx->lcd_info.bits_per_pixel == 0) {
+        SEC_HWC_Log(HWC_LOG_ERROR, "ATTENTION: BPP IS 0");
+    }
+
     return 0;
 }
 
@@ -342,25 +315,10 @@ int fimc_v4l2_set_src(int fd, unsigned int hw_ver, s5p_fimc_img_info *src)
     struct v4l2_crop    crop;
     struct v4l2_requestbuffers req;
 
-#ifdef BOARD_USE_V4L2_ION
-    /* You MUST initialize structure for v4l2 */
-    memset(&fmt, 0, sizeof(fmt));
-    memset(&cropcap, 0, sizeof(cropcap));
-    memset(&crop, 0, sizeof(crop));
-    memset(&req, 0, sizeof(req));
-
-    /*  To set size & format for source image (DMA-INPUT) */
-    fmt.fmt.pix_mp.num_planes  = src->planes;
-    fmt.fmt.pix_mp.width       = src->full_width;
-    fmt.fmt.pix_mp.height      = src->full_height;
-    fmt.fmt.pix_mp.pixelformat = src->color_space;
-    fmt.fmt.pix_mp.field       = V4L2_FIELD_ANY;
-#else
     fmt.fmt.pix.width       = src->full_width;
     fmt.fmt.pix.height      = src->full_height;
     fmt.fmt.pix.pixelformat = src->color_space;
     fmt.fmt.pix.field       = V4L2_FIELD_NONE;
-#endif
     fmt.type                = V4L2_BUF_TYPE_OUTPUT;
 
     if (ioctl(fd, VIDIOC_S_FMT, &fmt) < 0) {
@@ -373,10 +331,6 @@ int fimc_v4l2_set_src(int fd, unsigned int hw_ver, s5p_fimc_img_info *src)
     crop.type = V4L2_BUF_TYPE_OUTPUT;
     crop.c.width  = src->width;
     crop.c.height = src->height;
-#ifdef BOARD_USE_V4L2_ION
-    crop.c.left   = src->start_x;
-    crop.c.top    = src->start_y;
-#else
     if (0x50 <= hw_ver) {
         crop.c.left   = src->start_x;
         crop.c.top    = src->start_y;
@@ -384,8 +338,6 @@ int fimc_v4l2_set_src(int fd, unsigned int hw_ver, s5p_fimc_img_info *src)
         crop.c.left   = 0;
         crop.c.top    = 0;
     }
-
-#endif
 
     if (ioctl(fd, VIDIOC_S_CROP, &crop) < 0) {
         SEC_HWC_Log(HWC_LOG_ERROR, "%s::Error in video VIDIOC_S_CROP :"
@@ -413,27 +365,10 @@ int fimc_v4l2_set_dst(int fd, s5p_fimc_img_info *dst,
     struct v4l2_format      sFormat;
     struct v4l2_control     vc;
     struct v4l2_framebuffer fbuf;
-#ifdef BOARD_USE_V4L2_ION
-    struct v4l2_crop    crop;
-    struct v4l2_requestbuffers req;
-#endif
     int ret;
 
-#ifdef BOARD_USE_V4L2_ION
-    /* You MUST initialize structure for v4l2 */
-    memset(&sFormat, 0, sizeof(sFormat));
-    memset(&vc, 0, sizeof(vc));
-    memset(&fbuf, 0, sizeof(fbuf));
-    memset(&crop, 0, sizeof(crop));
-    memset(&req, 0, sizeof(req));
-#endif
-
     /* set rotation configuration */
-#ifdef BOARD_USE_V4L2_ION
-    vc.id = V4L2_CID_ROTATE;
-#else
     vc.id = V4L2_CID_ROTATION;
-#endif
     vc.value = rotation;
 
     ret = ioctl(fd, VIDIOC_S_CTRL, &vc);
@@ -466,45 +401,6 @@ int fimc_v4l2_set_dst(int fd, s5p_fimc_img_info *dst,
         return -1;
     }
 
-#ifdef BOARD_USE_V4L2_ION
-    /* set destination */
-    sFormat.type             = V4L2_BUF_TYPE_CAPTURE;
-    sFormat.fmt.pix_mp.width         = dst->full_width;
-    sFormat.fmt.pix_mp.height        = dst->full_height;
-    sFormat.fmt.pix_mp.pixelformat    = dst->color_space;
-    sFormat.fmt.pix_mp.num_planes    = dst->planes;
-    sFormat.fmt.pix.field            = V4L2_FIELD_ANY;
-
-    ret = ioctl(fd, VIDIOC_S_FMT, &sFormat);
-    if (ret < 0) {
-        SEC_HWC_Log(HWC_LOG_ERROR, "%s::Error in video VIDIOC_S_FMT (%d)", __func__, ret);
-        return -1;
-    }
-
-    /*  set destination window */
-    crop.type     = V4L2_BUF_TYPE_CAPTURE;
-    crop.c.left   = dst->start_x;
-    crop.c.top    = dst->start_y;
-    crop.c.width  = dst->width;
-    crop.c.height = dst->height;
-
-    ret = ioctl(fd, VIDIOC_S_CROP, &crop);
-    if (ret < 0) {
-        SEC_HWC_Log(HWC_LOG_ERROR, "%s::Error in video VIDIOC_S_CROP (%d)", __func__, ret);
-        return -1;
-    }
-
-    /*  input buffer type */
-    req.count       = 1;
-    req.type        = V4L2_BUF_TYPE_CAPTURE;
-    req.memory      = V4L2_MEMORY_USERPTR;
-
-    ret = ioctl (fd, VIDIOC_REQBUFS, &req);
-    if (ret < 0) {
-        SEC_HWC_Log(HWC_LOG_ERROR, "%s::Error in VIDIOC_REQBUFS (%d)", __func__, ret);
-        return -1;
-    }
-#else
     /* set size, format & address for destination image (DMA-OUTPUT) */
     ret = ioctl(fd, VIDIOC_G_FBUF, &fbuf);
     if (ret < 0) {
@@ -535,7 +431,6 @@ int fimc_v4l2_set_dst(int fd, s5p_fimc_img_info *dst,
         SEC_HWC_Log(HWC_LOG_ERROR, "%s::Error in video VIDIOC_S_FMT (%d)", __func__, ret);
         return -1;
     }
-#endif
 
     return 0;
 }
@@ -552,33 +447,14 @@ int fimc_v4l2_stream_on(int fd, enum v4l2_buf_type type)
 
 int fimc_v4l2_queue(int fd, struct fimc_buf *fimc_buf, enum v4l2_buf_type type, int index)
 {
-#ifdef BOARD_USE_V4L2_ION
-    struct v4l2_plane plane[3];
-    int i;
-#endif
     struct v4l2_buffer buf;
     int ret;
 
-#ifdef BOARD_USE_V4L2_ION
-    buf.length      = fimc_buf->planes;
-#else
     buf.length      = 0;
     buf.m.userptr   = (unsigned long)fimc_buf;
-#endif
     buf.memory      = V4L2_MEMORY_USERPTR;
     buf.index       = index;
     buf.type        = type;
-
-#ifdef BOARD_USE_V4L2_ION
-    if (buf.type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE ||
-        buf.type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
-        for (i = 0; i < buf.length; i++) {
-            plane[i].m.userptr = fimc_buf->base[i];
-            plane[i].length = fimc_buf->size[i];
-        }
-    }
-    buf.m.planes = plane;
-#endif
 
     ret = ioctl(fd, VIDIOC_QBUF, &buf);
     if (0 > ret) {
@@ -592,14 +468,7 @@ int fimc_v4l2_queue(int fd, struct fimc_buf *fimc_buf, enum v4l2_buf_type type, 
 int fimc_v4l2_dequeue(int fd, struct fimc_buf *fimc_buf, enum v4l2_buf_type type)
 {
     struct v4l2_buffer          buf;
-#ifdef BOARD_USE_V4L2_ION
-    struct v4l2_plane plane[3];
-#endif
 
-#ifdef BOARD_USE_V4L2_ION
-    buf.m.planes    = plane;
-    buf.length      = fimc_buf->planes;
-#endif
     buf.memory      = V4L2_MEMORY_USERPTR;
     buf.type        = type;
 
@@ -657,27 +526,6 @@ int fimc_handle_oneshot(int fd, struct fimc_buf *fimc_src_buf, struct fimc_buf *
     check_fps();
 #endif
 
-#ifdef BOARD_USE_V4L2_ION
-    if (fimc_v4l2_queue(fd, fimc_src_buf, V4L2_BUF_TYPE_OUTPUT, 0) < 0) {
-         SEC_HWC_Log(HWC_LOG_ERROR, "Fail : SRC v4l2_queue()");
-         return -1;
-     }
-
-    if (fimc_v4l2_queue(fd, fimc_dst_buf, V4L2_BUF_TYPE_CAPTURE, 0) < 0) {
-        SEC_HWC_Log(HWC_LOG_ERROR, "Fail : DST v4l2_queue()");
-        return -2;
-    }
-
-    if (fimc_v4l2_stream_on(fd, V4L2_BUF_TYPE_OUTPUT) < 0) {
-        SEC_HWC_Log(HWC_LOG_ERROR, "Fail : SRC v4l2_stream_on()");
-        return -3;
-    }
-
-    if (fimc_v4l2_stream_on(fd, V4L2_BUF_TYPE_CAPTURE) < 0) {
-        SEC_HWC_Log(HWC_LOG_ERROR, "Fail : DST v4l2_stream_on()");
-        return -4;
-    }
-#else
     if (fimc_v4l2_stream_on(fd, V4L2_BUF_TYPE_OUTPUT) < 0) {
         SEC_HWC_Log(HWC_LOG_ERROR, "Fail : SRC v4l2_stream_on()");
         return -5;
@@ -687,38 +535,23 @@ int fimc_handle_oneshot(int fd, struct fimc_buf *fimc_src_buf, struct fimc_buf *
         SEC_HWC_Log(HWC_LOG_ERROR, "Fail : SRC v4l2_queue()");
         goto STREAM_OFF;
     }
-#endif
+
     if (fimc_v4l2_dequeue(fd, fimc_src_buf, V4L2_BUF_TYPE_OUTPUT) < 0) {
         SEC_HWC_Log(HWC_LOG_ERROR, "Fail : SRC v4l2_dequeue()");
         return -6;
     }
-#ifdef BOARD_USE_V4L2_ION
-    if (fimc_v4l2_dequeue(fd, fimc_dst_buf, V4L2_BUF_TYPE_CAPTURE) < 0) {
-        SEC_HWC_Log(HWC_LOG_ERROR, "Fail : DST v4l2_dequeue()");
-        return -7;
-    }
-#endif
+
 STREAM_OFF:
     if (fimc_v4l2_stream_off(fd, V4L2_BUF_TYPE_OUTPUT) < 0) {
         SEC_HWC_Log(HWC_LOG_ERROR, "Fail : SRC  v4l2_stream_off()");
         return -8;
     }
-#ifdef BOARD_USE_V4L2_ION 
-    if (fimc_v4l2_stream_off(fd, V4L2_BUF_TYPE_CAPTURE) < 0) {
-        SEC_HWC_Log(HWC_LOG_ERROR, "Fail : DST  v4l2_stream_off()");
-        return -9;
-    }
-#endif
+
     if (fimc_v4l2_clr_buf(fd, V4L2_BUF_TYPE_OUTPUT) < 0) {
         SEC_HWC_Log(HWC_LOG_ERROR, "Fail : SRC v4l2_clr_buf()");
         return -10;
     }
-#ifdef BOARD_USE_V4L2_ION
-    if (fimc_v4l2_clr_buf(fd, V4L2_BUF_TYPE_CAPTURE)< 0) {
-        SEC_HWC_Log(HWC_LOG_ERROR, "Fail : DST v4l2_clr_buf()");
-        return -11;
-    }
-#endif
+
     return 0;
 }
 
@@ -822,7 +655,7 @@ static int memcpy_rect(void *dst, void *src, int fullW, int fullH, int realW, in
 }
 
 /*****************************************************************************/
-static int get_src_phys_addr(struct exynos4_hwc_composer_device_1_t *ctx,
+static int get_src_phys_addr(struct hwc_context_t *ctx,
         sec_img *src_img, sec_rect *src_rect)
 {
     s5p_fimc_t *fimc = &ctx->fimc;
@@ -881,13 +714,6 @@ static int get_src_phys_addr(struct exynos4_hwc_composer_device_1_t *ctx,
             }
             break;
         default:
-#ifdef BOARD_USE_V4L2_ION
-            fimc->params.src.buf_addr_phy_rgb_y = src_img->base;
-            fimc->params.src.buf_addr_phy_cb = src_img->base + src_img->uoffset;
-            fimc->params.src.buf_addr_phy_cr = src_img->base + src_img->uoffset + src_img->voffset;
-            src_phys_addr = fimc->params.src.buf_addr_phy_rgb_y;
-            break;
-#endif
             if (src_img->usage & GRALLOC_USAGE_HW_FIMC1) {
                 fimc->params.src.buf_addr_phy_rgb_y = src_img->paddr;
                 fimc->params.src.buf_addr_phy_cb = src_img->paddr + src_img->uoffset;
@@ -995,11 +821,7 @@ static inline int multipleOf16(int number)
 
 static inline int widthOfPP(unsigned int ver, int pp_color_format, int number)
 {
-#ifdef BOARD_USE_V4L2_ION
-    if (1) {
-#else
     if (0x50 <= ver) {
-#endif
         switch (pp_color_format) {
         /* 422 1/2/3 plane */
         case V4L2_PIX_FMT_YUYV:
@@ -1102,7 +924,7 @@ static unsigned int get_yuv_planes(unsigned int fmt)
         return yuv_list[sel].planes;
 }
 
-static int runFimcCore(struct exynos4_hwc_composer_device_1_t *ctx,
+static int runFimcCore(struct hwc_context_t *ctx,
         unsigned int src_phys_addr, sec_img *src_img, sec_rect *src_rect,
         uint32_t src_color_space,
         unsigned int dst_phys_addr, sec_img *dst_img, sec_rect *dst_rect,
@@ -1114,12 +936,6 @@ static int runFimcCore(struct exynos4_hwc_composer_device_1_t *ctx,
     struct fimc_buf fimc_src_buf;
     int src_bpp, src_planes;
 
-#ifdef BOARD_USE_V4L2_ION
-    struct fimc_buf fimc_dst_buf;
-    int dst_bpp, dst_planes;
-    unsigned int src_frame_size = 0;
-    unsigned int dst_frame_size = 0;
-#endif
     unsigned int    frame_size = 0;
 
     bool src_cbcr_order = true;
@@ -1139,17 +955,6 @@ static int runFimcCore(struct exynos4_hwc_composer_device_1_t *ctx,
     params->src.color_space = src_color_space;
     params->src.buf_addr_phy_rgb_y = src_phys_addr;
 
-#ifdef BOARD_USE_V4L2_ION
-    params->dst.full_width  = dst_img->f_w;
-    params->dst.full_height = dst_img->f_h;
-    params->dst.width       = widthOfPP(fimc->hw_ver, dst_color_space, dst_rect->w);
-    params->dst.height      = heightOfPP(dst_color_space, dst_rect->h);
-    params->dst.start_x     = dst_rect->x;
-    params->dst.start_y     = dst_rect->y;
-    params->dst.color_space = dst_color_space;
-    params->dst.buf_addr_phy_rgb_y = dst_phys_addr;
-#endif
-
     /* check src minimum */
     if (src_rect->w < 16 || src_rect->h < 8) {
         SEC_HWC_Log(HWC_LOG_ERROR,
@@ -1163,8 +968,6 @@ static int runFimcCore(struct exynos4_hwc_composer_device_1_t *ctx,
         return -1;
     }
 
-#ifdef BOARD_USE_V4L2_ION
-#else
     /* 2. param(fimc config)->dst information
      *    - dst_img,dst_rect,rot => d_fw,d_fh,d_w,d_h,d_x,d_y
      */
@@ -1227,7 +1030,6 @@ static int runFimcCore(struct exynos4_hwc_composer_device_1_t *ctx,
         break;
     }
     params->dst.color_space = dst_color_space;
-#endif
 
     SEC_HWC_Log(HWC_LOG_DEBUG,
             "runFimcCore()::"
@@ -1270,35 +1072,6 @@ static int runFimcCore(struct exynos4_hwc_composer_device_1_t *ctx,
      *   - set input buffer
      *   - set buffer type (V4L2_MEMORY_USERPTR)
      */
-#ifdef BOARD_USE_V4L2_ION
-    switch (dst_img->format) {
-    case HAL_PIXEL_FORMAT_RGBA_8888:
-    case HAL_PIXEL_FORMAT_RGBX_8888:
-    case HAL_PIXEL_FORMAT_RGB_888:
-    case HAL_PIXEL_FORMAT_BGRA_8888:
-        dst_planes = 1;
-        dst_bpp = 32;
-        break;
-
-    case HAL_PIXEL_FORMAT_RGB_565:
-    case HAL_PIXEL_FORMAT_RGBA_5551:
-    case HAL_PIXEL_FORMAT_RGBA_4444:
-        dst_planes = 1;
-        dst_bpp = 16;
-        break;
-    }
-
-    dst_frame_size = params->dst.width * params->dst.height ;
-    params->dst.planes = dst_planes;
-
-    if (dst_planes == 1) {
-        fimc_dst_buf.base[0] = params->dst.buf_addr_phy_rgb_y;
-        if (dst_bpp == 32)
-            fimc_dst_buf.size[0] = dst_frame_size * 4;
-        else if (dst_bpp == 16)
-             fimc_dst_buf.size[0] = dst_frame_size * 2;
-    }
-#endif
 
     if (fimc_v4l2_set_dst(fimc->dev_fd, &params->dst, rotate_value, hflip, vflip, dst_phys_addr) < 0) {
         SEC_HWC_Log(HWC_LOG_ERROR, "fimc_v4l2_set_dst is failed\n");
@@ -1311,12 +1084,11 @@ static int runFimcCore(struct exynos4_hwc_composer_device_1_t *ctx,
      *   - set input buffer
      *   - set buffer type (V4L2_MEMORY_USERPTR)
      */
-#ifndef BOARD_USE_V4L2_ION
+
     if (fimc_v4l2_set_src(fimc->dev_fd, fimc->hw_ver, &params->src) < 0) {
         SEC_HWC_Log(HWC_LOG_ERROR, "fimc_v4l2_set_src is failed\n");
         return -1;
     }
-#endif
 
     /* 5. Set input dma address (Y/RGB, Cb, Cr)
      *    - zero copy : mfc, camera
@@ -1342,30 +1114,6 @@ static int runFimcCore(struct exynos4_hwc_composer_device_1_t *ctx,
         if (src_img->format == HAL_PIXEL_FORMAT_YV12)
             src_cbcr_order = false;
 
-#ifdef BOARD_USE_V4L2_ION
-        fimc_src_buf.base[0] = params->src.buf_addr_phy_rgb_y;
-        if (src_cbcr_order == true) {
-            fimc_src_buf.base[1] = params->src.buf_addr_phy_cb;
-            fimc_src_buf.base[2] = params->src.buf_addr_phy_cr;
-        } else {
-            fimc_src_buf.base[1] = params->src.buf_addr_phy_cr;
-            fimc_src_buf.base[2] = params->src.buf_addr_phy_cb;
-        }
-        SEC_HWC_Log(HWC_LOG_DEBUG,
-                "runFimcCore - Y=0x%X, U=0x%X, V=0x%X\n",
-                fimc_src_buf.base[0], fimc_src_buf.base[1],fimc_src_buf.base[2]);
-        src_frame_size = params->src.full_width * params->src.full_height;
-        fimc_src_buf.size[0] = src_frame_size;
-        fimc_src_buf.size[1] = src_frame_size >> 2;
-        fimc_src_buf.size[2] = src_frame_size >> 2;
-        SEC_HWC_Log(HWC_LOG_DEBUG,
-                "runFimcCore - Y_length=%d, U_length=%d, V_length=%d\n",
-                fimc_src_buf.size[0], fimc_src_buf.size[1],fimc_src_buf.size[2]);
-        src_planes = get_yuv_planes(src_color_space);
-
-        break;
-#endif
-
         if (src_img->usage & GRALLOC_USAGE_HW_FIMC1) {
             fimc_src_buf.base[0] = params->src.buf_addr_phy_rgb_y;
             if (src_cbcr_order == true) {
@@ -1386,36 +1134,10 @@ static int runFimcCore(struct exynos4_hwc_composer_device_1_t *ctx,
     /* 6. Run FIMC
      *    - stream on => queue => dequeue => stream off => clear buf
      */
-#ifdef BOARD_USE_V4L2_ION
-    int ret = 0;
-    params->src.planes = src_planes;
-
-    if (fimc_v4l2_set_src(fimc->dev_fd, fimc->hw_ver, &params->src) < 0) {
-        SEC_HWC_Log(HWC_LOG_ERROR, "fimc_v4l2_set_src is failed\n");
-        return -1;
-    }
-
-    fimc_src_buf.planes = src_planes;
-    fimc_dst_buf.planes = dst_planes;
-
-    ret = fimc_handle_oneshot(fimc->dev_fd, &fimc_src_buf, &fimc_dst_buf);
-
-    if (ret < 0) {
-        SEC_HWC_Log(HWC_LOG_ERROR,"fimc_handle_oneshot = %d\n",ret);
-        if (ret == -2) {
-            fimc_v4l2_clr_buf(fimc->dev_fd, V4L2_BUF_TYPE_OUTPUT);
-        } else if (ret == -3) {
-            fimc_v4l2_clr_buf(fimc->dev_fd, V4L2_BUF_TYPE_OUTPUT);
-            fimc_v4l2_clr_buf(fimc->dev_fd, V4L2_BUF_TYPE_CAPTURE);
-        }
-        return ret;
-    }
-#else
     if (fimc_handle_oneshot(fimc->dev_fd, &fimc_src_buf, NULL) < 0) {
         fimc_v4l2_clr_buf(fimc->dev_fd, V4L2_BUF_TYPE_OUTPUT);
         return -1;
     }
-#endif
 
     return 0;
 }
@@ -1461,8 +1183,6 @@ int createFimc(s5p_fimc_t *fimc)
         goto err;
     }
 
-#ifdef BOARD_USE_V4L2_ION
-#else
     vc.id = V4L2_CID_FIMC_VERSION;
     vc.value = 0;
 
@@ -1471,7 +1191,6 @@ int createFimc(s5p_fimc_t *fimc)
         goto err;
     }
     fimc->hw_ver = vc.value;
-#endif
 
     return 0;
 
@@ -1498,7 +1217,7 @@ int destroyFimc(s5p_fimc_t *fimc)
     return 0;
 }
 
-int runFimc(struct exynos4_hwc_composer_device_1_t *ctx,
+int runFimc(struct hwc_context_t *ctx,
             struct sec_img *src_img, struct sec_rect *src_rect,
             struct sec_img *dst_img, struct sec_rect *dst_rect,
             uint32_t transform)
@@ -1537,3 +1256,31 @@ int runFimc(struct exynos4_hwc_composer_device_1_t *ctx,
 
         return 0;
     }
+
+int check_yuv_format(unsigned int color_format) {
+    switch (color_format) {
+    case HAL_PIXEL_FORMAT_YV12:
+    case HAL_PIXEL_FORMAT_YCbCr_422_SP:
+    case HAL_PIXEL_FORMAT_YCrCb_420_SP:
+    case HAL_PIXEL_FORMAT_YCbCr_422_I:
+    case HAL_PIXEL_FORMAT_YCbCr_422_P:
+    case HAL_PIXEL_FORMAT_YCbCr_420_P:
+    case HAL_PIXEL_FORMAT_YCbCr_420_I:
+    case HAL_PIXEL_FORMAT_CbYCrY_422_I:
+    case HAL_PIXEL_FORMAT_CbYCrY_420_I:
+    case HAL_PIXEL_FORMAT_YCbCr_420_SP:
+    case HAL_PIXEL_FORMAT_YCrCb_422_SP:
+    case HAL_PIXEL_FORMAT_CUSTOM_YCbCr_420_SP:
+    case HAL_PIXEL_FORMAT_CUSTOM_YCrCb_420_SP:
+    case HAL_PIXEL_FORMAT_CUSTOM_YCbCr_420_SP_TILED:
+    case HAL_PIXEL_FORMAT_CUSTOM_YCbCr_422_SP:
+    case HAL_PIXEL_FORMAT_CUSTOM_YCrCb_422_SP:
+    case HAL_PIXEL_FORMAT_CUSTOM_YCbCr_422_I:
+    case HAL_PIXEL_FORMAT_CUSTOM_YCrCb_422_I:
+    case HAL_PIXEL_FORMAT_CUSTOM_CbYCrY_422_I:
+    case HAL_PIXEL_FORMAT_CUSTOM_CrYCbY_422_I:
+        return 1;
+    default:
+        return 0;
+    }
+}

@@ -23,25 +23,14 @@ LOCAL_MODULE_PATH := $(TARGET_OUT_SHARED_LIBRARIES)/hw
 LOCAL_SHARED_LIBRARIES := liblog libcutils libEGL \
 			  libGLESv1_CM libhardware_legacy libhardware libsecion libutils libsync
 
-ifeq ($(BOARD_USE_V4L2_ION),true)
-LOCAL_SHARED_LIBRARIES += libsecion
-endif
-
 LOCAL_C_INCLUDES := \
-	$(LOCAL_PATH)/../include \
-	$(LOCAL_PATH)/../libexynosutils 
+	$(LOCAL_PATH)/../include
 
-LOCAL_SRC_FILES := SecHWCLog.cpp SecHWCUtils.cpp hwc.cpp
+LOCAL_SRC_FILES := SecHWCLog.cpp SecHWCUtils.cpp SecHWC.cpp
 
-LOCAL_C_INCLUDES += $(LOCAL_PATH)/../libfimg4x
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/../libfimg
 
-ifeq ($(TARGET_SOC),exynos4210)
-LOCAL_CFLAGS += -DSAMSUNG_EXYNOS4210
-endif
-
-ifeq ($(TARGET_SOC),exynos4x12)
-LOCAL_CFLAGS += -DSAMSUNG_EXYNOS4x12
-endif
+LOCAL_CFLAGS += -DSAMSUNG_EXYNOS4x12 -DSYSFS_VSYNC_NOTIFICATION
 
 ifeq ($(BOARD_USES_HDMI),true)
 LOCAL_C_INCLUDES += \
@@ -73,14 +62,6 @@ endif
 ifeq ($(BOARD_HDMI_STD),STD_1080P)
 LOCAL_CFLAGS  += -DSTD_1080P
 endif
-endif
-
-ifeq ($(BOARD_USE_V4L2),true)
-LOCAL_CFLAGS += -DBOARD_USE_V4L2
-endif
-
-ifeq ($(BOARD_USE_V4L2_ION),true)
-LOCAL_CFLAGS += -DBOARD_USE_V4L2_ION
 endif
 
 ifeq ($(BOARD_NO_OVERLAY),true)
