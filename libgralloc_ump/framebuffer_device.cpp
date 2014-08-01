@@ -48,6 +48,7 @@
 #include "gralloc_helper.h"
 
 #include "linux/fb.h"
+#include "s3c_lcd.h"
 
 #ifdef USE_WFD
 #include "WfdVideoFbInput.h"
@@ -63,7 +64,8 @@
 #define S3CFB_GET_FB_PHY_ADDR           _IOR('F', 310, unsigned int)
 
 enum {
-    PAGE_FLIP = 0x00000001,
+    NO_PAGE_FLIP = 0x0,
+    PAGE_FLIP = 0x1,
 };
 
 #ifdef USE_WFD
@@ -227,6 +229,8 @@ int init_frame_buffer_locked(struct private_module_t* module)
     if (module->framebuffer)
         return 0;
 
+    ALOGD("%s Initializing framebuffer", __func__);
+
     char const * const device_template[] = {
         "/dev/graphics/fb%u",
         "/dev/fb%u",
@@ -246,6 +250,9 @@ int init_frame_buffer_locked(struct private_module_t* module)
     if (fd < 0)
         return -errno;
 
+    if (ioctl(fd, S3CFB_SET_INITIAL_CONFIG) != 0)
+        ALOGE("%s S3CFB_SET_INITIAL_CONFIG failed", __func__);
+
     struct fb_fix_screeninfo finfo;
     if (ioctl(fd, FBIOGET_FSCREENINFO, &finfo) == -1)
         return -errno;
@@ -254,9 +261,9 @@ int init_frame_buffer_locked(struct private_module_t* module)
     if (ioctl(fd, FBIOGET_VSCREENINFO, &info) == -1)
         return -errno;
 
-    info.reserved[0] = 0;
-    info.reserved[1] = 0;
-    info.reserved[2] = 0;
+    info.reserved[0] = 0; //ok
+    info.reserved[1] = 0; //ok
+    info.reserved[2] = 0; //ok
     info.xoffset = 0;
     info.yoffset = 0;
     info.activate = FB_ACTIVATE_NOW;
@@ -278,33 +285,33 @@ int init_frame_buffer_locked(struct private_module_t* module)
     /*
      * Explicitly request 8/8/8
      */
-    info.bits_per_pixel = 32;
-    info.red.offset     = 16;
-    info.red.length     = 8;
-    info.green.offset   = 8;
-    info.green.length   = 8;
-    info.blue.offset    = 0;
-    info.blue.length    = 8;
-    info.transp.offset  = 0;
-    info.transp.length  = 0;
+    info.bits_per_pixel = 32; //ok
+    info.red.offset     = 16; //ok
+    info.red.length     = 8; //ok
+    info.green.offset   = 8; //ok
+    info.green.length   = 8; //ok
+    info.blue.offset    = 0; //ok
+    info.blue.length    = 8; //ok
+    info.transp.offset  = 0; //ok
+    info.transp.length  = 0; //ok
 #endif
 
     /*
      * Request NUM_BUFFERS screens (at lest 2 for page flipping)
      */
-    info.yres_virtual = info.yres * NUM_BUFFERS;
+    info.yres_virtual = info.yres * NUM_BUFFERS; //ok
 
     uint32_t flags = PAGE_FLIP;
     if (ioctl(fd, FBIOPUT_VSCREENINFO, &info) == -1) {
         info.yres_virtual = info.yres;
-        flags &= ~PAGE_FLIP;
+        flags = NO_PAGE_FLIP;
         ALOGW("FBIOPUT_VSCREENINFO failed, page flipping not supported");
     }
 
     if (info.yres_virtual < info.yres * 2) {
         // we need at least 2 for page-flipping
         info.yres_virtual = info.yres;
-        flags &= ~PAGE_FLIP;
+        flags = NO_PAGE_FLIP;
         ALOGW("page flipping not supported (yres_virtual=%d, requested=%d)",
                 info.yres_virtual, info.yres * 2);
     }
@@ -312,16 +319,25 @@ int init_frame_buffer_locked(struct private_module_t* module)
     if (ioctl(fd, FBIOGET_VSCREENINFO, &info) == -1)
         return -errno;
 
+    if (info.pixclock == 0) {
+        ALOGW("%s pixclock is 0, setting to 60Hz", __func__);
+        info.pixclock = 60 * 1000;  /* 60 Hz */
+    } else {
+
+    }
+
+    // TODO - check these division, since it is very difficult to understand the disassembly
     int refreshRate = 1000000000000000LLU /
     (
-        uint64_t( info.upper_margin + info.lower_margin + info.yres )
-        * ( info.left_margin  + info.right_margin + info.xres )
+        uint64_t( info.upper_margin + info.lower_margin + info.yres + info.vsync_len )
+        * uint64_t( info.left_margin  + info.right_margin + info.xres + info.hsync_len )
         * info.pixclock
     );
 
     if (refreshRate == 0)
         refreshRate = 60 * 1000;  /* 60 Hz */
 
+    //TODO - confirm the rest of code is as in stock
     if (int(info.width) <= 0 || int(info.height) <= 0) {
         /* the driver doesn't return that information. default to 160 dpi */
         info.width  = ((info.xres * 25.4f)/160.0f + 0.5f);
@@ -382,7 +398,7 @@ int init_frame_buffer_locked(struct private_module_t* module)
     size_t fbSize = round_up_to_page_size(finfo.line_length * info.yres_virtual);
     void* vaddr = mmap(0, fbSize, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
     if (vaddr == MAP_FAILED) {
-        ALOGE("Error mapping the framebuffer (%s)", strerror(errno));
+        ALOGE("%s Error mapping the framebuffer (%s)", __func__, strerror(errno));
         return -errno;
     }
 
