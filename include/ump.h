@@ -25,7 +25,7 @@
 #include "ump_platform.h"
 
 
-#include "ion.h"
+#include "secion.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
