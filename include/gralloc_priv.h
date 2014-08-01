@@ -108,11 +108,11 @@ struct private_handle_t {
         LOCK_STATE_READ_MASK =   0x3FFFFFFF
     };
 
-    int     fd;
+    int     fd; //0xc
 
-    int     magic;
-    int     flags;
-    int     size;
+    int     magic; //0x10
+    int     flags; //0x14
+    int     size;  //0x18
     int     base;
     int     lockState;
     int     writeOwner;
@@ -121,18 +121,18 @@ struct private_handle_t {
     /* Following members are for UMP memory only */
     int     ump_id;
     int     ump_mem_handle;
-    int     offset;
-    int     paddr;
+    int     offset; //0x34
+    int     paddr; //0x38?
 
-    int     format;
-    int     usage;
-    int     width;
-    int     height;
-    int     bpp;
-    int     stride;
+    int     format; //0x3c?
+    int     usage; //0x40 ?
+    int     width; //0x44 ?
+    int     height; //0x48 ?
+    int     bpp; //0x4c ?
+    int     stride; //0x50 ?
 
-    /* Following members ard for YUV information */
-    unsigned int yaddr;
+    /* Following members are for YUV information */
+    unsigned int yaddr; //0x54?
     unsigned int uoffset;
     unsigned int voffset;
     
