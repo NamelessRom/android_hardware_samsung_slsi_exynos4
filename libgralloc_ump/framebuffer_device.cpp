@@ -48,6 +48,7 @@
 #include "gralloc_helper.h"
 
 #include "linux/fb.h"
+#include "s3c_lcd.h"
 
 #ifdef USE_WFD
 #include "WfdVideoFbInput.h"
@@ -227,6 +228,8 @@ int init_frame_buffer_locked(struct private_module_t* module)
     if (module->framebuffer)
         return 0;
 
+    ALOGD("%s Initializing framebuffer", __func__);
+
     char const * const device_template[] = {
         "/dev/graphics/fb%u",
         "/dev/fb%u",
@@ -246,6 +249,9 @@ int init_frame_buffer_locked(struct private_module_t* module)
     if (fd < 0)
         return -errno;
 
+    if (ioctl(fd, S3CFB_SET_INITIAL_CONFIG) != 0)
+        ALOGE("%s S3CFB_SET_INITIAL_CONFIG failed", __func__);
+
     struct fb_fix_screeninfo finfo;
     if (ioctl(fd, FBIOGET_FSCREENINFO, &finfo) == -1)
         return -errno;
@@ -254,9 +260,9 @@ int init_frame_buffer_locked(struct private_module_t* module)
     if (ioctl(fd, FBIOGET_VSCREENINFO, &info) == -1)
         return -errno;
 
-    info.reserved[0] = 0;
-    info.reserved[1] = 0;
-    info.reserved[2] = 0;
+    info.reserved[0] = 0; //ok
+    info.reserved[1] = 0; //ok
+    info.reserved[2] = 0; //ok
     info.xoffset = 0;
     info.yoffset = 0;
     info.activate = FB_ACTIVATE_NOW;
@@ -312,16 +318,22 @@ int init_frame_buffer_locked(struct private_module_t* module)
     if (ioctl(fd, FBIOGET_VSCREENINFO, &info) == -1)
         return -errno;
 
-    int refreshRate = 1000000000000000LLU /
-    (
-        uint64_t( info.upper_margin + info.lower_margin + info.yres )
-        * ( info.left_margin  + info.right_margin + info.xres )
-        * info.pixclock
-    );
+    int refreshRate = 0;
+    if (info.pixclock > 0) {
+        refreshRate = 1000000000000000LLU /
+        (
+            uint64_t( info.upper_margin + info.lower_margin + info.yres + info.vsync_len ) /* ARM oss code has vsync_len / hsync_len switched */
+            * uint64_t( info.left_margin  + info.right_margin + info.xres + info.hsync_len )
+            * info.pixclock
+        );
+    } else {
+        ALOGW("%s pixclock is 0 for fd: %d", __func__, fd);
+    }
 
     if (refreshRate == 0)
         refreshRate = 60 * 1000;  /* 60 Hz */
 
+    //TODO - confirm the rest of code is as in stock
     if (int(info.width) <= 0 || int(info.height) <= 0) {
         /* the driver doesn't return that information. default to 160 dpi */
         info.width  = ((info.xres * 25.4f)/160.0f + 0.5f);
@@ -376,13 +388,14 @@ int init_frame_buffer_locked(struct private_module_t* module)
     char value[PROPERTY_VALUE_MAX];
     property_get("debug.gralloc.vsync", value, "1");
     module->enableVSync = atoi(value);
+
     /*
      * map the framebuffer
      */
     size_t fbSize = round_up_to_page_size(finfo.line_length * info.yres_virtual);
     void* vaddr = mmap(0, fbSize, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
     if (vaddr == MAP_FAILED) {
-        ALOGE("Error mapping the framebuffer (%s)", strerror(errno));
+        ALOGE("%s Error mapping the framebuffer (%s)", __func__, strerror(errno));
         return -errno;
     }
 
@@ -424,6 +437,7 @@ int enableScreen(struct framebuffer_device_t* dev, int enable)
 }
 static int init_frame_buffer(struct private_module_t* module)
 {
+    ALOGE("%s",__func__);
     pthread_mutex_lock(&module->lock);
     int err = init_frame_buffer_locked(module);
     pthread_mutex_unlock(&module->lock);
@@ -471,6 +485,8 @@ int framebuffer_device_open(hw_module_t const* module, const char* name, hw_devi
 #ifdef USE_WFD
     g_WfdVideoFbInput = android::WfdVideoFbInput::getInstance();
 #endif
+
+    ALOGE("%s name=%s", __func__, name);
 
     alloc_device_t* gralloc_device;
     status = gralloc_open(module, &gralloc_device);

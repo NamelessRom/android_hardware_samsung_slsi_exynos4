@@ -28,7 +28,7 @@ typedef enum {
     UMP_REF_DRV_CONSTRAINT_NONE = 0,
     UMP_REF_DRV_CONSTRAINT_PHYSICALLY_LINEAR = 1,
     /* This enum is included by samsung */
-    UMP_REF_DRV_CONSTRAINT_USE_CACHE = 4,
+    UMP_REF_DRV_CONSTRAINT_USE_CACHE = 128, /* TODO: for r4p0 it should be 4. Changed in order to test it with stock rom r3p2 */
 } ump_alloc_constraints;
 
 /** Allocate an UMP handle containing a memory buffer.

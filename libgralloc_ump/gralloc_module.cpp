@@ -48,17 +48,40 @@
 #include "ump_ref_drv.h"
 #include "s5p_fimc.h"
 #include "exynos_mem.h"
+
 static pthread_mutex_t s_map_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t sMapLock = PTHREAD_MUTEX_INITIALIZER;
 
 
 static int gSdkVersion = 0;
 static int s_ump_is_open = 0;
-static int gMemfd = 0;
+
 #define PFX_NODE_MEM   "/dev/exynos-mem"
 
 /* we need this for now because pmem cannot mmap at an offset */
 #define PMEM_HACK   1
+
+int get_bpp(int format)
+{
+    switch(format) {
+    case HAL_PIXEL_FORMAT_RGBA_8888:
+    case HAL_PIXEL_FORMAT_RGBX_8888:
+    case HAL_PIXEL_FORMAT_BGRA_8888:
+        return 4;
+
+    case HAL_PIXEL_FORMAT_RGB_888:
+        return 3;
+
+    case HAL_PIXEL_FORMAT_RGB_565:
+    case HAL_PIXEL_FORMAT_RGBA_5551:
+    case HAL_PIXEL_FORMAT_RGBA_4444:
+   	    return 2;
+
+    default:
+        return 0;
+    }
+}
+
 #ifdef USE_PARTIAL_FLUSH
 struct private_handle_rect *rect_list;
 
@@ -120,6 +143,8 @@ int release_rect(int secure_id)
 static int gralloc_map(gralloc_module_t const* module,
         buffer_handle_t handle, void** vaddr)
 {
+    ALOGE("%s", __func__);
+
     private_handle_t* hnd = (private_handle_t*)handle;
     if (!(hnd->flags & private_handle_t::PRIV_FLAGS_FRAMEBUFFER)) {
         if (hnd->flags & private_handle_t::PRIV_FLAGS_USES_IOCTL) {
@@ -163,7 +188,9 @@ static int gralloc_map(gralloc_module_t const* module,
 static int gralloc_unmap(gralloc_module_t const* module,
         buffer_handle_t handle)
 {
-    private_handle_t* hnd = (private_handle_t*)handle;
+    ALOGE("%s",__func__);
+
+	private_handle_t* hnd = (private_handle_t*)handle;
     if (!(hnd->flags & private_handle_t::PRIV_FLAGS_FRAMEBUFFER)) {
         if (hnd->flags & private_handle_t::PRIV_FLAGS_USES_IOCTL) {
             void* base = (void*)(intptr_t(hnd->base) - hnd->offset);
@@ -196,7 +223,7 @@ static int gralloc_device_open(const hw_module_t* module, const char* name, hw_d
     int status = -EINVAL;
     char property[PROPERTY_VALUE_MAX];
 
-
+    ALOGD("%s name=%s", __func__, name);
     if (!strcmp(name, GRALLOC_HARDWARE_GPU0))
         status = alloc_device_open(module, name, device);
     else if (!strcmp(name, GRALLOC_HARDWARE_FB0))
@@ -213,6 +240,9 @@ static int gralloc_register_buffer(gralloc_module_t const* module, buffer_handle
     int err = 0;
     int retval = -EINVAL;
     void *vaddr;
+    bool cacheable=false;
+    int rc=0;
+
     if (private_handle_t::validate(handle) < 0) {
         ALOGE("Registering invalid buffer, returning error");
         return -EINVAL;
@@ -221,18 +251,24 @@ static int gralloc_register_buffer(gralloc_module_t const* module, buffer_handle
     /* if this handle was created in this process, then we keep it as is. */
     private_handle_t* hnd = (private_handle_t*)handle;
 
+    /*if (handle)
+        ALOGE("%s sizeof(private_handle_t)=%d sizeof(private_handle_rect)=%d", __func__, sizeof(private_handle_t), sizeof(private_handle_rect)); */
+
+    ALOGE("%s flags=%x", __func__, hnd->flags);
+
 #ifdef USE_PARTIAL_FLUSH
-    if (hnd->flags & private_handle_t::PRIV_FLAGS_USES_UMP) {
+    if (hnd->flags & (private_handle_t::PRIV_FLAGS_USES_UMP | private_handle_t::PRIV_FLAGS_FRAMEBUFFER)) {
         private_handle_rect *psRect;
         private_handle_rect *psFRect;
         psRect = (private_handle_rect *)calloc(1, sizeof(private_handle_rect));
         psRect->handle = (int)hnd->ump_id;
-        psRect->stride = (int)hnd->stride;
+        psRect->stride = (int) (hnd->stride * get_bpp(hnd->format));
         psFRect = find_last_rect((int)hnd->ump_id);
         psFRect->next = psRect;
     }
 #endif
 
+    /* not in stock
     // wjj, when WFD, use GRALLOC_USAGE_HW_VIDEO_ENCODER, 
     // ANW pid is same as SF pid, but need to create ump handle because WFD's BQ is in different pid.
     // gSdkVersion <= 17 means JB4.2, BQ always created by SF.
@@ -243,7 +279,7 @@ static int gralloc_register_buffer(gralloc_module_t const* module, buffer_handle
     }
 
     if (hnd->flags & private_handle_t::PRIV_FLAGS_USES_ION)
-        err = gralloc_map(module, handle, &vaddr);
+        err = gralloc_map(module, handle, &vaddr); */
 
     pthread_mutex_lock(&s_map_lock);
 
@@ -252,19 +288,20 @@ static int gralloc_register_buffer(gralloc_module_t const* module, buffer_handle
         if (res != UMP_OK) {
             pthread_mutex_unlock(&s_map_lock);
             ALOGE("Failed to open UMP library");
-            return retval;
+            return -EINVAL;
         }
         s_ump_is_open = 1;
     }
 
-    hnd->pid = getpid();
+    /* not in stock hnd->pid = getpid(); */
 
     if (hnd->flags & private_handle_t::PRIV_FLAGS_USES_UMP) {
+        ALOGE("%s PRIV_FLAGS_USES_UMP", __func__);
+
         hnd->ump_mem_handle = (int)ump_handle_create_from_secure_id(hnd->ump_id);
-        if (UMP_INVALID_MEMORY_HANDLE != (ump_handle)hnd->ump_mem_handle) {
+        if (hnd->ump_mem_handle > 0) {
             hnd->base = (int)ump_mapped_pointer_get((ump_handle)hnd->ump_mem_handle);
             if (0 != hnd->base) {
-                hnd->lockState = private_handle_t::LOCK_STATE_MAPPED;
                 hnd->writeOwner = 0;
                 hnd->lockState = 0;
 
@@ -272,30 +309,95 @@ static int gralloc_register_buffer(gralloc_module_t const* module, buffer_handle
                 return 0;
             } else {
                 ALOGE("Failed to map UMP handle");
+                ump_reference_release((ump_handle)hnd->ump_mem_handle);
+                pthread_mutex_unlock(&s_map_lock);
+                return -EINVAL;
             }
-
-            ump_reference_release((ump_handle)hnd->ump_mem_handle);
         } else {
             ALOGE("Failed to create UMP handle");
+            hnd->base = NULL;
+            pthread_mutex_unlock(&s_map_lock);
+            return -EINVAL;
         }
-    } else if (hnd->flags & private_handle_t::PRIV_FLAGS_USES_PMEM) {
-        pthread_mutex_unlock(&s_map_lock);
-        return 0;
-    } else if (hnd->flags & private_handle_t::PRIV_FLAGS_USES_IOCTL) {
-        void* vaddr = NULL;
 
-        if (gMemfd == 0) {
-            gMemfd = open(PFX_NODE_MEM, O_RDWR);
-            if (gMemfd < 0) {
-                ALOGE("%s:: %s exynos-mem open error\n", __func__, PFX_NODE_MEM);
-                return false;
+
+    } else {
+        if (hnd->flags & private_handle_t::PRIV_FLAGS_USES_PMEM) {
+            ALOGE("%s PRIV_FLAGS_USES_PMEM mapping base=%x", __func__, hnd->base);
+
+            pthread_mutex_unlock(&s_map_lock);
+            return 0;
+        } else if (hnd->flags & (private_handle_t::PRIV_FLAGS_USES_IOCTL | private_handle_t::PRIV_FLAGS_USES_HDMI)) {
+            ALOGE("%s registering non-UMP buffer not supported", __func__);
+
+            pthread_mutex_unlock(&s_map_lock);
+    	    return -EINVAL;
+        } else {
+            void* vaddr = NULL;
+
+   	        if (gMemfd == 0) {
+                gMemfd = open(PFX_NODE_MEM, O_RDWR);
+                if (gMemfd < 0) {
+                    ALOGE("%s:: %s exynos-mem open error\n", __func__, PFX_NODE_MEM);
+    	            pthread_mutex_unlock(&s_map_lock);
+    	            return false;
+    	        }
+    	    }
+
+   	        cacheable = true;
+    	    if ( (hnd->flags & 0x7f) == 0 )
+    	        cacheable = false;
+
+    	    ALOGE("%s cacheable=%d", __func__, cacheable);
+
+            rc = ioctl(gMemfd, EXYNOS_MEM_SET_CACHEABLE, &cacheable);
+            if (rc < 0)
+                ALOGE("%s: Unable to set EXYNOS_MEM_SET_CACHEABLE to %d", __func__, cacheable);
+
+            if (hnd->flags & private_handle_t::PRIV_FLAGS_FRAMEBUFFER) {
+                pthread_mutex_unlock(&s_map_lock); //?
+                return 0;
+            } else {
+                if (hnd->flags & (private_handle_t::PRIV_FLAGS_USES_IOCTL | private_handle_t::PRIV_FLAGS_USES_HDMI)) {
+                    vaddr = mmap(0, hnd->yaddr * 1024, PROT_READ|PROT_WRITE, MAP_SHARED, gMemfd, (hnd->paddr - hnd->offset));
+
+                    if (vaddr == MAP_FAILED) {
+                        ALOGE("Could not mmap %s fd(%d)", strerror(errno),hnd->fd);
+                        pthread_mutex_unlock(&s_map_lock);
+                        return -errno;
+                    }
+
+                } else {
+                	vaddr = mmap(0, hnd->size + hnd->offset, PROT_READ|PROT_WRITE, MAP_SHARED, hnd->fd, (hnd->paddr - hnd->offset));
+
+                	if (vaddr == MAP_FAILED) {
+                	    ALOGE("Could not mmap %s fd(%d)", strerror(errno),hnd->fd);
+                	    pthread_mutex_unlock(&s_map_lock);
+                	    return -errno;
+                    }
+
+                }
+
+                hnd->base = intptr_t(vaddr) + hnd->offset;
+              	    pthread_mutex_unlock(&s_map_lock);
+               	return 0;
             }
-        }
 
-        gralloc_map(module, handle, &vaddr);
-        pthread_mutex_unlock(&s_map_lock);
-        return 0;
-    } else if (hnd->flags & private_handle_t::PRIV_FLAGS_USES_ION) {
+
+        	}
+    }
+
+
+
+
+
+
+
+
+
+
+
+ /*   else if (hnd->flags & private_handle_t::PRIV_FLAGS_USES_ION) {
         hnd->ump_mem_handle = (int)ump_handle_create_from_secure_id(hnd->ump_id);
         if (UMP_INVALID_MEMORY_HANDLE != (ump_handle)hnd->ump_mem_handle) {
             vaddr = (void*)ump_mapped_pointer_get((ump_handle)hnd->ump_mem_handle);
@@ -318,11 +420,13 @@ static int gralloc_register_buffer(gralloc_module_t const* module, buffer_handle
     }
 
     pthread_mutex_unlock(&s_map_lock);
-    return retval;
+    return retval; */
 }
 
 static int gralloc_unregister_buffer(gralloc_module_t const* module, buffer_handle_t handle)
 {
+    ALOGE("%s", __func__);
+
     if (private_handle_t::validate(handle) < 0) {
         ALOGE("unregistering invalid buffer, returning error");
         return -EINVAL;
@@ -387,6 +491,8 @@ static int gralloc_lock(gralloc_module_t const* module, buffer_handle_t handle,
         return -EINVAL;
     }
 
+    ALOGE("%s", __func__);
+
     private_handle_t* hnd = (private_handle_t*)handle;
 
 #ifdef SAMSUNG_EXYNOS_CACHE_UMP
@@ -415,6 +521,8 @@ static int gralloc_lock(gralloc_module_t const* module, buffer_handle_t handle,
 
 static int gralloc_unlock(gralloc_module_t const* module, buffer_handle_t handle)
 {
+    ALOGE("%s", __func__);
+
     if (private_handle_t::validate(handle) < 0) {
         ALOGE("Unlocking invalid buffer, returning error");
         return -EINVAL;
@@ -455,6 +563,8 @@ static int gralloc_unlock(gralloc_module_t const* module, buffer_handle_t handle
 
 static int gralloc_getphys(gralloc_module_t const* module, buffer_handle_t handle, void** paddr)
 {
+    ALOGE("%s",__func__);
+
     private_handle_t* hnd = (private_handle_t*)handle;
     paddr[0] = (void*)hnd->paddr;
     paddr[1] = (void*)(hnd->paddr + hnd->uoffset);

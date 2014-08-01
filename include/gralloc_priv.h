@@ -47,25 +47,27 @@
 
 #define GRALLOC_ARM_UMP_MODULE 1
 
+static int gMemfd = 0;
+
 struct private_handle_t;
 
 struct private_module_t {
     gralloc_module_t base;
 
-    private_handle_t* framebuffer;
-    uint32_t flags;
-    uint32_t numBuffers;
-    uint32_t bufferMask;
-    pthread_mutex_t lock;
-    buffer_handle_t currentBuffer;
-    int ion_client;
+    private_handle_t* framebuffer; //b4
+    uint32_t flags; //b8
+    uint32_t numBuffers; //bc
+    uint32_t bufferMask; //c0
+    pthread_mutex_t lock; //c4
+    buffer_handle_t currentBuffer; //c8 length 4
+    int ion_client; //cc
 
-    struct fb_var_screeninfo info;
-    struct fb_fix_screeninfo finfo;
-    float xdpi;
-    float ydpi;
-    float fps;
-    int enableVSync;
+    struct fb_var_screeninfo info; //d0 length a0
+    struct fb_fix_screeninfo finfo; //170 length 0x44
+    float xdpi; //1b4
+    float ydpi; //1b8
+    float fps; //1bc
+    int enableVSync; //1c0
 
     enum {
         PRIV_USAGE_LOCKED_FOR_POST = 0x80000000
@@ -108,36 +110,36 @@ struct private_handle_t {
         LOCK_STATE_READ_MASK =   0x3FFFFFFF
     };
 
-    int     fd;
+    int     fd; //0xc
 
-    int     magic;
-    int     flags;
-    int     size;
-    int     base;
-    int     lockState;
-    int     writeOwner;
-    int     pid;
+    int     magic; //0x10
+    int     flags; //0x14
+    int     size;  //0x18
+    int     base;  //0x1c
+    int     lockState;  //0x20
+    int     writeOwner; //0x24
+    int     pid; //0x28
 
     /* Following members are for UMP memory only */
-    int     ump_id;
-    int     ump_mem_handle;
-    int     offset;
-    int     paddr;
+    int     ump_id; //0x2c
+    int     ump_mem_handle; //0x30
+    int     offset; //0x34
+    int     paddr; //0x38?
 
-    int     format;
-    int     usage;
-    int     width;
-    int     height;
-    int     bpp;
-    int     stride;
+    int     format; //0x3c?
+    int     usage; //0x40 ?
+    int     width; //0x44 ?
+    int     height; //0x48 ?
+    int     bpp; //0x4c ?
+    int     stride; //0x50 ?
 
-    /* Following members ard for YUV information */
-    unsigned int yaddr;
-    unsigned int uoffset;
-    unsigned int voffset;
+    /* Following members are for YUV information */
+    unsigned int yaddr; //0x54?
+    unsigned int uoffset; //0x58?
+    unsigned int voffset; //0x5c
     
     /* Following members are for ION memory only */
-    int     ion_client;
+    int     ion_client; //0x60
 
 #ifdef __cplusplus
     static const int sNumInts = 21;
@@ -182,8 +184,10 @@ struct private_handle_t {
     lockState(lock_state),
     writeOwner(0),
     pid(getpid()),
-    ump_id((int)UMP_INVALID_SECURE_ID),
-    ump_mem_handle((int)UMP_INVALID_MEMORY_HANDLE),
+//    ump_id((int)UMP_INVALID_SECURE_ID),
+    ump_id((int)-1),
+//    ump_mem_handle((int)UMP_INVALID_MEMORY_HANDLE),
+    ump_mem_handle(0),
     offset(fb_offset),
     paddr(0),
     format(0),
