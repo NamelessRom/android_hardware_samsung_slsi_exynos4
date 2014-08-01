@@ -111,8 +111,8 @@ struct private_handle_t {
     int     fd;
 
     int     magic;
-    int     flags;
-    int     size;
+    int     flags; //0x14
+    int     size; //0x18
     int     base;
     int     lockState;
     int     writeOwner;
