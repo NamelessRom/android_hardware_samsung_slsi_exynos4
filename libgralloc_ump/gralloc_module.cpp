@@ -435,7 +435,7 @@ static int gralloc_unlock(gralloc_module_t const* module, buffer_handle_t handle
     }
 #endif
     if (hnd->flags & private_handle_t::PRIV_FLAGS_USES_ION)
-        ion_msync(hnd->ion_client, hnd->fd, IMSYNC_DEV_TO_RW | IMSYNC_SYNC_FOR_DEV, hnd->size, hnd->offset);
+        ion_msync(hnd->ion_client, hnd->fd, (ION_MSYNC_FLAGS) (IMSYNC_DEV_TO_RW | IMSYNC_SYNC_FOR_DEV), hnd->size, hnd->offset);
 
     if (hnd->flags & private_handle_t::PRIV_FLAGS_USES_IOCTL) {
         int ret;
