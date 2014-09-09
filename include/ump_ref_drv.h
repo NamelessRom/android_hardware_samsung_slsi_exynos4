@@ -27,8 +27,12 @@ typedef enum {
     /* This enum must match with the IOCTL enum in ump_ioctl.h */
     UMP_REF_DRV_CONSTRAINT_NONE = 0,
     UMP_REF_DRV_CONSTRAINT_PHYSICALLY_LINEAR = 1,
-    /* This enum is included by samsung */
+#ifdef SAMSUNG_MSYNC_CACHE
+    /* Sammy R3P2 kernel and user space drivers use this value */
+    UMP_REF_DRV_CONSTRAINT_USE_CACHE = 128,
+#else
     UMP_REF_DRV_CONSTRAINT_USE_CACHE = 4,
+#endif
 } ump_alloc_constraints;
 
 /** Allocate an UMP handle containing a memory buffer.
