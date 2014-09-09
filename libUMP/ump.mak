@@ -1,11 +1,11 @@
 #
-# Copyright (C) 2012 The Android Open Source Project
+# Copyright (C) 2011, 2013 ARM Limited. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
 #
-#      http://www.apache.org/licenses/LICENSE-2.0
+#       http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,9 +14,21 @@
 # limitations under the License.
 #
 
-ifeq ($(TARGET_BOARD_PLATFORM),exynos4)
+ifeq ($(UMP_NO_UMP),1)
 
-exynos4_dirs := libgralloc_ump libhdmi libhwcomposer libhwconverter libsecion libfimc libhwjpeg libfimg libUMP
+UMP_SRCS = \
+	$(UMP_DIR)/arch_999_no_ump/ump_frontend.c \
+	$(UMP_DIR)/arch_999_no_ump/ump_ref_drv.c
 
-include $(call all-named-subdir-makefiles,$(exynos4_dirs))
+else
+
+UMP_SRCS = \
+	$(UMP_DIR)/arch_011_udd/ump_frontend.c \
+	$(UMP_DIR)/arch_011_udd/ump_ref_drv.c \
+	$(UMP_DIR)/arch_011_udd/ump_arch.c \
+	$(UMP_DIR)/os/$(UDD_OS)/ump_uku.c \
+	$(UMP_DIR)/os/$(UDD_OS)/ump_osu_memory.c \
+	$(UMP_DIR)/os/$(UDD_OS)/ump_osu_locks.c
+
 endif
+
