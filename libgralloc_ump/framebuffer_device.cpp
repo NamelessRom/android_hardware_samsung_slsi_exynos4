@@ -48,6 +48,7 @@
 #include "gralloc_helper.h"
 
 #include "linux/fb.h"
+#include "s3c_lcd.h"
 
 #ifdef USE_WFD
 #include "WfdVideoFbInput.h"
@@ -58,9 +59,6 @@
 #define WAIT_VSYNC_OPT
 
 #define FBIO_WAITFORVSYNC       _IOW('F', 0x20, __u32)
-#define S3CFB_SET_VSYNC_INT     _IOW('F', 206, unsigned int)
-#define S3CFB_GET_CUR_WIN_BUF_ADDR  _IOR ('F', 311, unsigned int)
-#define S3CFB_GET_FB_PHY_ADDR           _IOR('F', 310, unsigned int)
 
 enum {
     PAGE_FLIP = 0x00000001,
@@ -72,6 +70,8 @@ static android::WfdVideoFbInput       *g_WfdVideoFbInput;
 
 static int fb_set_swap_interval(struct framebuffer_device_t* dev, int interval)
 {
+    ALOGD_IF(debug_level > 0, "%s interval=%d", __func__,interval);
+
     if (interval < dev->minSwapInterval || interval > dev->maxSwapInterval)
         return -EINVAL;
 
@@ -82,7 +82,9 @@ static int fb_set_swap_interval(struct framebuffer_device_t* dev, int interval)
 static int wait_for_vsync(int fd)
 {
         int interrupt, crtc;
-        
+
+        ALOGD_IF(debug_level > 0, "%s", __func__);
+
         // enable VSYNC
         interrupt = 1;
         if (ioctl(fd, S3CFB_SET_VSYNC_INT, &interrupt) < 0) {
@@ -106,8 +108,12 @@ static int wait_for_vsync(int fd)
 
 static int fb_post(struct framebuffer_device_t* dev, buffer_handle_t buffer)
 {
+	ALOGD_IF(debug_level > 0, "%s", __func__);
+
     if (private_handle_t::validate(buffer) < 0)
         return -EINVAL;
+
+    ALOGD_IF(debug_level > 0, "%s valid buffer", __func__);
 
     private_handle_t const* hnd = reinterpret_cast<private_handle_t const*>(buffer);
     private_module_t* m = reinterpret_cast<private_module_t*>(dev->common.module);
@@ -125,79 +131,32 @@ static int fb_post(struct framebuffer_device_t* dev, buffer_handle_t buffer)
         m->info.activate = FB_ACTIVATE_VBL;
         m->info.yoffset = offset / m->finfo.line_length;
 
+        if (ioctl(m->framebuffer->fd, FBIOPAN_DISPLAY, &m->info) < 0) {
+            ALOGE("%s FBIOPAN_DISPLAY failed", __func__);
+            m->base.unlock(&m->base, buffer);
+            return 0;
+        }
+
         if (m->enableVSync) {
-            /*STANDARD_LINUX_SCREEN*/
-            
-#ifndef WAIT_VSYNC_OPT
-            if (ioctl(m->framebuffer->fd, FBIOPAN_DISPLAY, &m->info) == -1) {
-                ALOGE("FBIOPAN_DISPLAY failed");
-                m->base.unlock(&m->base, buffer);
-                return 0;
-            }
-            if (wait_for_vsync(m->framebuffer->fd) < 0 ) {
-                return 0;
-            }
-#else
-            unsigned int fbPhysAddr = 0;
-            unsigned int fbSize = m->finfo.line_length * m->info.yres;
-            unsigned int nextBufOffset = fbSize + offset;
-            if (nextBufOffset > fbSize * (NUM_BUFFERS - 1))
-                nextBufOffset = 0;
-            unsigned int nextBufAddr = m->finfo.smem_start + nextBufOffset;
-            static unsigned int lastBufIdx = 0;
-            if (NUM_BUFFERS == 3) {
-                //wjj, because SF will free fb once when startup, it will confuse the sequence of fb saved in BufferQueue.
-                //dequeue slot is 0,1,2; but saved fb(ANB) maybe 0,1,2 or 2,1,0. 
-                //so we can't get nextBufAddr by adding fbSize simply.
-                //if NUM_BUFFERS==3, the next dequeueBuffer must be the remain one (except last displayed and current ready to post).
-                //Here get remain fb.
-                nextBufAddr = (NUM_BUFFERS - offset/fbSize - lastBufIdx)*fbSize + m->finfo.smem_start;
-            }
+            char value[PROPERTY_VALUE_MAX];
+            unsigned int test=0;
 
-            if (ioctl(m->framebuffer->fd, S3CFB_GET_FB_PHY_ADDR, &(fbPhysAddr)) < 0) {
-                ALOGE("%s::S3CFB_GET_FB_PHY_ADDR fail", __func__);
-            }
-
-            ALOGV("displayAddr=[0x%x], hnd_addr=[0x%x], nextBufAddr=[0x%x]", 
-                fbPhysAddr, (m->finfo.smem_start + offset), nextBufAddr);
-            
-            if ((fbPhysAddr == nextBufAddr) && (NUM_BUFFERS > 2)) {
-                ALOGV("wait_for_vsync");
-                if (wait_for_vsync(m->framebuffer->fd) < 0 ) {
+            property_get("pwr.powersave_fps", value, "0");
+            if (atoi(value) == 1) {
+                if (ioctl(m->framebuffer->fd, FBIO_WAITFORVSYNC, &test) < 0) {
+                    ALOGE("%s FBIO_WAITFORVSYNC failed", __func__);
                     return 0;
                 }
             }
-
-            if (ioctl(m->framebuffer->fd, FBIOPAN_DISPLAY, &m->info) == -1) {
-                ALOGE("FBIOPAN_DISPLAY failed");
-                m->base.unlock(&m->base, buffer);
+            /* yes, twice */
+            if (ioctl(m->framebuffer->fd, FBIO_WAITFORVSYNC, &test) < 0) {
+                ALOGE("%s FBIO_WAITFORVSYNC failed", __func__);
                 return 0;
-            }
-
-            if ((fbPhysAddr == nextBufAddr) && (NUM_BUFFERS <= 2)) {
-                ALOGV("wait_for_vsync");
-                if (wait_for_vsync(m->framebuffer->fd) < 0 ) {
-                    return 0;
-                }
-            }
-
-            if (NUM_BUFFERS == 3)
-                lastBufIdx = offset/fbSize; //wjj, save current posted fb.
-#endif
-        } else {
-            /*Standard Android way*/
-            if (ioctl(m->framebuffer->fd, FBIOPUT_VSCREENINFO, &m->info) == -1) {
-                ALOGE("FBIOPUT_VSCREENINFO failed");
-                m->base.unlock(&m->base, buffer);
-                return -errno;
             }
         }
+
         m->currentBuffer = buffer;
-#ifdef USE_WFD
-        if (g_WfdVideoFbInput != NULL) {
-            g_WfdVideoFbInput->setFbAddr(m->finfo.smem_start+offset);
-        }
-#endif
+
     } else {
         /*
          * If we can't do the page_flip, just copy the buffer to the front
@@ -227,6 +186,8 @@ int init_frame_buffer_locked(struct private_module_t* module)
     if (module->framebuffer)
         return 0;
 
+    ALOGD("%s Initializing framebuffer", __func__);
+
     char const * const device_template[] = {
         "/dev/graphics/fb%u",
         "/dev/fb%u",
@@ -245,6 +206,9 @@ int init_frame_buffer_locked(struct private_module_t* module)
 
     if (fd < 0)
         return -errno;
+
+    if (ioctl(fd, S3CFB_SET_INITIAL_CONFIG) != 0)
+        ALOGE("%s S3CFB_SET_INITIAL_CONFIG failed", __func__);
 
     struct fb_fix_screeninfo finfo;
     if (ioctl(fd, FBIOGET_FSCREENINFO, &finfo) == -1)
@@ -314,8 +278,8 @@ int init_frame_buffer_locked(struct private_module_t* module)
 
     int refreshRate = 1000000000000000LLU /
     (
-        uint64_t( info.upper_margin + info.lower_margin + info.yres )
-        * ( info.left_margin  + info.right_margin + info.xres )
+        uint64_t( info.upper_margin + info.lower_margin + info.yres + info.vsync_len)
+        * ( info.left_margin  + info.right_margin + info.xres + info.hsync_len)
         * info.pixclock
     );
 
@@ -382,7 +346,7 @@ int init_frame_buffer_locked(struct private_module_t* module)
     size_t fbSize = round_up_to_page_size(finfo.line_length * info.yres_virtual);
     void* vaddr = mmap(0, fbSize, PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
     if (vaddr == MAP_FAILED) {
-        ALOGE("Error mapping the framebuffer (%s)", strerror(errno));
+        ALOGE("%s Error mapping the framebuffer (%s)", __func__, strerror(errno));
         return -errno;
     }
 
@@ -442,6 +406,8 @@ static int fb_close(struct hw_device_t *device)
 
 int compositionComplete(struct framebuffer_device_t* dev)
 {
+    ALOGD_IF(debug_level > 0, "%s",__func__);
+
 #ifndef HWC_HWOVERLAY
     unsigned char pixels[4];
     /* By doing a readpixel here we force the GL driver to start rendering
