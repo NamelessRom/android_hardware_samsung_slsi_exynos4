@@ -612,7 +612,6 @@ struct private_module_t HAL_MODULE_INFO_SYM =
         getphys: gralloc_getphys,
         perform: NULL,
         lock_ycbcr: NULL,
-        reserved_proc: {0,},
     },
     framebuffer: NULL,
     flags: 0,

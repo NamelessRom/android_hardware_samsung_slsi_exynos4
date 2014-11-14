@@ -59,7 +59,6 @@
 #include <sys/ioctl.h>
 
 #if HAVE_ANDROID_OS
-#include <linux/android_pmem.h>
 #include <pixelflinger/format.h>
 #endif
 
